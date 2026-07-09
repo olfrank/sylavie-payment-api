@@ -1,4 +1,5 @@
 import { ApiError } from "./http.js";
+import { getShopifyAdminAccessToken } from "./shopifyAuth.js";
 
 export type PaymentDraftRequest = {
   email?: string;
@@ -39,8 +40,9 @@ export type PaymentDraftCustomAttribute = {
 };
 
 export type ShopifyConfig = {
-  shopifyAdminAccessToken: string;
   shopifyApiVersion: string;
+  shopifyClientId: string;
+  shopifyClientSecret: string;
   shopifyStoreDomain: string;
 };
 
@@ -163,11 +165,12 @@ async function shopifyGraphQl<T>(
   variables: Record<string, unknown>
 ): Promise<T> {
   const url = `https://${config.shopifyStoreDomain}/admin/api/${config.shopifyApiVersion}/graphql.json`;
+  const accessToken = await getShopifyAdminAccessToken(config);
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shopify-Access-Token": config.shopifyAdminAccessToken
+      "X-Shopify-Access-Token": accessToken
     },
     body: JSON.stringify({ query, variables })
   });

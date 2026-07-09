@@ -60,12 +60,20 @@ Copy `.env.example` to `.env.local` for local development.
 
 ```bash
 SHOPIFY_STORE_DOMAIN=sylavie.myshopify.com
-SHOPIFY_ADMIN_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SHOPIFY_CLIENT_ID=your-dev-dashboard-client-id
+SHOPIFY_CLIENT_SECRET=your-dev-dashboard-client-secret
 SHOPIFY_API_VERSION=2026-07
 ALLOWED_ORIGINS=https://www.sylavie.com,https://sylavie.myshopify.com
 ```
 
-The Shopify Admin access token needs permission to create draft orders.
+`SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET` come from the app's Shopify Dev
+Dashboard settings. The API exchanges them server-side for an Admin API access
+token using Shopify's client credentials grant, caches expiring tokens in memory
+for the lifetime of the serverless instance, and sends the token only from the
+backend to Shopify.
+
+The installed app needs Admin API permission to create draft orders. Do not put
+the client secret or Admin API access token in storefront/theme code.
 
 ## Development
 

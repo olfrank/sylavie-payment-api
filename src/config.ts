@@ -1,18 +1,21 @@
 export type Config = {
   allowedOrigins: string[];
-  shopifyAdminAccessToken: string;
   shopifyApiVersion: string;
+  shopifyClientId: string;
+  shopifyClientSecret: string;
   shopifyStoreDomain: string;
 };
 
 export function getConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const shopifyStoreDomain = requireEnv(env, "SHOPIFY_STORE_DOMAIN");
-  const shopifyAdminAccessToken = requireEnv(env, "SHOPIFY_ADMIN_ACCESS_TOKEN");
+  const shopifyClientId = requireEnv(env, "SHOPIFY_CLIENT_ID");
+  const shopifyClientSecret = requireEnv(env, "SHOPIFY_CLIENT_SECRET");
 
   return {
     allowedOrigins: parseCsv(env.ALLOWED_ORIGINS),
-    shopifyAdminAccessToken,
     shopifyApiVersion: env.SHOPIFY_API_VERSION || "2026-07",
+    shopifyClientId,
+    shopifyClientSecret,
     shopifyStoreDomain: normalizeShopDomain(shopifyStoreDomain)
   };
 }
@@ -35,5 +38,6 @@ function parseCsv(value: string | undefined): string[] {
 }
 
 function normalizeShopDomain(domain: string): string {
-  return domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const normalized = domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase();
+  return normalized.includes(".") ? normalized : `${normalized}.myshopify.com`;
 }

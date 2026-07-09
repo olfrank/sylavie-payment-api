@@ -33,6 +33,10 @@ For additional payments, send `"paymentType": "additional"` and include
 The API also still accepts the original low-level draft order payload with
 `lineItems` for internal testing and manual calls.
 
+Priority and additional payment draft orders are created as custom service-charge
+line items with `requiresShipping: false`, `taxable: false`, zero weight, and no
+shipping address or shipping line.
+
 ### Response
 
 ```json
@@ -73,6 +77,18 @@ backend to Shopify.
 
 The installed app needs Admin API permission to create draft orders. Do not put
 the client secret or Admin API access token in storefront/theme code.
+
+## Fulfilment status
+
+Shopify's Draft Order custom line item input supports service-style fields such
+as `requiresShipping`, `taxable`, and `weight`, but it does not expose a draft
+order field that directly suppresses fulfilment status after the invoice is paid.
+
+If paid priority/additional payment orders still appear as `Unfulfilled`, the
+safest backend-only follow-up is to add an `orders/paid` webhook that identifies
+orders tagged `priority-payment` or `additional-payment` and immediately marks
+their fulfilment orders fulfilled through the Admin API. Avoid theme-side fixes
+or order-status hacks.
 
 ## Development
 

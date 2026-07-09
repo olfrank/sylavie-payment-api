@@ -5,6 +5,7 @@ export type PaymentDraftRequest = {
   email?: string;
   phone?: string;
   note?: string;
+  presentmentCurrencyCode?: string;
   tags?: string[];
   lineItems: PaymentDraftLineItem[];
   billingAddress?: PaymentDraftAddress;
@@ -17,9 +18,16 @@ export type PaymentDraftLineItem = {
   title?: string;
   quantity: number;
   price?: string;
+  priceCurrencyCode?: string;
   sku?: string;
   taxable?: boolean;
   requiresShipping?: boolean;
+  weight?: PaymentDraftWeight;
+};
+
+export type PaymentDraftWeight = {
+  value: number;
+  unit: "GRAMS" | "KILOGRAMS" | "OUNCES" | "POUNDS";
 };
 
 export type PaymentDraftAddress = {
@@ -161,13 +169,19 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
       notes
     }),
     tags: [`${paymentType}-payment`, orderNumber],
+    presentmentCurrencyCode: "GBP",
     lineItems: [
       {
         title: `${titlePrefix} - ${orderNumber}`,
         quantity: 1,
         price: amount,
+        priceCurrencyCode: "GBP",
         taxable: false,
-        requiresShipping: false
+        requiresShipping: false,
+        weight: {
+          value: 0,
+          unit: "GRAMS"
+        }
       }
     ],
     customAttributes: buildSimplePaymentCustomAttributes({
@@ -290,6 +304,7 @@ function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown
     email: request.email,
     phone: request.phone,
     note: request.note,
+    presentmentCurrencyCode: request.presentmentCurrencyCode,
     tags: request.tags,
     billingAddress: request.billingAddress,
     shippingAddress: request.shippingAddress,
@@ -299,10 +314,18 @@ function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown
         variantId: item.variantId,
         title: item.title,
         quantity: item.quantity,
-        originalUnitPrice: item.price,
+        originalUnitPrice: item.price && !item.priceCurrencyCode ? item.price : undefined,
+        originalUnitPriceWithCurrency:
+          item.price && item.priceCurrencyCode
+            ? {
+                amount: item.price,
+                currencyCode: item.priceCurrencyCode
+              }
+            : undefined,
         sku: item.sku,
         taxable: item.taxable,
-        requiresShipping: item.requiresShipping
+        requiresShipping: item.requiresShipping,
+        weight: item.weight
       })
     )
   });

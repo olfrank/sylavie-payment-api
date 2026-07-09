@@ -13,26 +13,25 @@ Creates a Shopify Draft Order through the Admin GraphQL API.
 
 ```json
 {
-  "email": "customer@example.com",
-  "lineItems": [
-    {
-      "variantId": "gid://shopify/ProductVariant/1234567890",
-      "quantity": 1
-    }
-  ],
-  "shippingAddress": {
-    "firstName": "Ada",
-    "lastName": "Lovelace",
-    "address1": "1 Example Street",
-    "city": "London",
-    "country": "United Kingdom",
-    "zip": "SW1A 1AA"
-  }
+  "paymentType": "priority",
+  "amount": "85.50",
+  "currency": "GBP",
+  "orderNumber": "SV1421",
+  "firstName": "Test",
+  "lastName": "Customer",
+  "email": "test@example.com",
+  "country": "United Kingdom",
+  "deliveryDate": "2026-08-14",
+  "notes": "Optional note",
+  "termsAccepted": true
 }
 ```
 
-For custom line items, send `title`, `price`, and `quantity` instead of
-`variantId`.
+For additional payments, send `"paymentType": "additional"` and include
+`reason` when relevant.
+
+The API also still accepts the original low-level draft order payload with
+`lineItems` for internal testing and manual calls.
 
 ### Response
 
@@ -49,7 +48,7 @@ Validation and Shopify errors are returned as:
 {
   "error": {
     "code": "bad_request",
-    "message": "lineItems must contain at least one item."
+    "message": "amount must be a positive GBP decimal string with up to 2 decimal places."
   }
 }
 ```

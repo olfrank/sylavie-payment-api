@@ -39,6 +39,8 @@ export type PaymentDraftCustomAttribute = {
   value: string;
 };
 
+type SimplePaymentType = "priority" | "additional";
+
 export type ShopifyConfig = {
   shopifyApiVersion: string;
   shopifyClientId: string;
@@ -84,6 +86,10 @@ export function validatePaymentDraftRequest(value: unknown): PaymentDraftRequest
     throw new ApiError(400, "bad_request", "Request body must be a JSON object.");
   }
 
+  if (isSimplePaymentDraftRequest(value)) {
+    return validateSimplePaymentDraftRequest(value);
+  }
+
   const email = optionalString(value.email, "email");
   const phone = optionalString(value.phone, "phone");
 
@@ -105,6 +111,149 @@ export function validatePaymentDraftRequest(value: unknown): PaymentDraftRequest
     shippingAddress: optionalAddress(value.shippingAddress, "shippingAddress"),
     customAttributes: optionalCustomAttributes(value.customAttributes)
   };
+}
+
+function isSimplePaymentDraftRequest(value: Record<string, unknown>): boolean {
+  return (
+    "paymentType" in value ||
+    "amount" in value ||
+    "currency" in value ||
+    "orderNumber" in value ||
+    "termsAccepted" in value
+  );
+}
+
+function validateSimplePaymentDraftRequest(value: Record<string, unknown>): PaymentDraftRequest {
+  const paymentType = requiredPaymentType(value.paymentType);
+  const amount = requiredGbpAmount(value.amount);
+  const currency = requiredString(value.currency, "currency");
+
+  if (currency !== "GBP") {
+    throw new ApiError(400, "bad_request", "currency must be GBP.");
+  }
+
+  if (value.termsAccepted !== true) {
+    throw new ApiError(400, "bad_request", "termsAccepted must be true.");
+  }
+
+  const orderNumber = requiredString(value.orderNumber, "orderNumber");
+  const firstName = requiredString(value.firstName, "firstName");
+  const lastName = requiredString(value.lastName, "lastName");
+  const email = requiredString(value.email, "email");
+  const country = requiredString(value.country, "country");
+  const deliveryDate = optionalString(value.deliveryDate, "deliveryDate");
+  const reason = optionalString(value.reason, "reason");
+  const notes = optionalString(value.notes, "notes");
+  const titlePrefix =
+    paymentType === "priority" ? "Priority Service Payment" : "Additional Payment";
+
+  return {
+    email,
+    note: buildSimplePaymentNote({
+      paymentType,
+      orderNumber,
+      firstName,
+      lastName,
+      email,
+      country,
+      deliveryDate,
+      reason,
+      notes
+    }),
+    tags: [`${paymentType}-payment`, orderNumber],
+    lineItems: [
+      {
+        title: `${titlePrefix} - ${orderNumber}`,
+        quantity: 1,
+        price: amount,
+        taxable: false,
+        requiresShipping: false
+      }
+    ],
+    customAttributes: buildSimplePaymentCustomAttributes({
+      paymentType,
+      orderNumber,
+      firstName,
+      lastName,
+      country,
+      deliveryDate,
+      reason,
+      notes
+    })
+  };
+}
+
+function requiredPaymentType(value: unknown): SimplePaymentType {
+  const paymentType = requiredString(value, "paymentType");
+
+  if (paymentType !== "priority" && paymentType !== "additional") {
+    throw new ApiError(400, "bad_request", "paymentType must be priority or additional.");
+  }
+
+  return paymentType;
+}
+
+function requiredGbpAmount(value: unknown): string {
+  const amount = requiredString(value, "amount");
+
+  if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) {
+    throw new ApiError(
+      400,
+      "bad_request",
+      "amount must be a positive GBP decimal string with up to 2 decimal places."
+    );
+  }
+
+  return Number(amount).toFixed(2);
+}
+
+function buildSimplePaymentNote(context: {
+  paymentType: SimplePaymentType;
+  orderNumber: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  country: string;
+  deliveryDate?: string;
+  reason?: string;
+  notes?: string;
+}): string {
+  return [
+    `Payment type: ${context.paymentType}`,
+    `Order number: ${context.orderNumber}`,
+    `Customer: ${context.firstName} ${context.lastName}`,
+    `Email: ${context.email}`,
+    `Country: ${context.country}`,
+    context.deliveryDate ? `Delivery date: ${context.deliveryDate}` : undefined,
+    context.reason ? `Reason: ${context.reason}` : undefined,
+    context.notes ? `Notes: ${context.notes}` : undefined,
+    "Terms accepted: true"
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function buildSimplePaymentCustomAttributes(context: {
+  paymentType: SimplePaymentType;
+  orderNumber: string;
+  firstName: string;
+  lastName: string;
+  country: string;
+  deliveryDate?: string;
+  reason?: string;
+  notes?: string;
+}): PaymentDraftCustomAttribute[] {
+  return [
+    { key: "payment type", value: context.paymentType },
+    { key: "order number", value: context.orderNumber },
+    { key: "first name", value: context.firstName },
+    { key: "last name", value: context.lastName },
+    { key: "country", value: context.country },
+    context.deliveryDate ? { key: "delivery date", value: context.deliveryDate } : undefined,
+    context.reason ? { key: "reason", value: context.reason } : undefined,
+    context.notes ? { key: "notes", value: context.notes } : undefined,
+    { key: "terms accepted", value: "true" }
+  ].filter((attribute): attribute is PaymentDraftCustomAttribute => Boolean(attribute));
 }
 
 export async function createPaymentDraft(

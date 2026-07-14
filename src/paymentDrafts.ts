@@ -37,7 +37,9 @@ export type PaymentDraftAddress = {
   address2?: string;
   city?: string;
   province?: string;
+  provinceCode?: string;
   country?: string;
+  countryCode?: string;
   zip?: string;
   phone?: string;
 };
@@ -148,7 +150,9 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
   const firstName = requiredString(value.firstName, "firstName");
   const lastName = requiredString(value.lastName, "lastName");
   const email = requiredString(value.email, "email");
-  const country = requiredString(value.country, "country");
+  const countryCode = requiredCountryCode(value.countryCode, "countryCode");
+  const country = optionalString(value.country, "country");
+  const shippingAddress = optionalAddress(value.shippingAddress, "shippingAddress");
   const deliveryDate = optionalString(value.deliveryDate, "deliveryDate");
   const reason = optionalString(value.reason, "reason");
   const notes = optionalString(value.notes, "notes");
@@ -163,7 +167,8 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
       firstName,
       lastName,
       email,
-      country,
+      country: country ?? countryCode,
+      countryCode,
       deliveryDate,
       reason,
       notes
@@ -176,7 +181,7 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
         quantity: 1,
         price: amount,
         priceCurrencyCode: "GBP",
-        taxable: false,
+        taxable: true,
         requiresShipping: false,
         weight: {
           value: 0,
@@ -184,12 +189,24 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
         }
       }
     ],
+    billingAddress: {
+      firstName,
+      lastName,
+      countryCode
+    },
+    shippingAddress: shippingAddress
+      ? {
+          ...shippingAddress,
+          countryCode
+        }
+      : undefined,
     customAttributes: buildSimplePaymentCustomAttributes({
       paymentType,
       orderNumber,
       firstName,
       lastName,
-      country,
+      country: country ?? countryCode,
+      countryCode,
       deliveryDate,
       reason,
       notes
@@ -228,6 +245,7 @@ function buildSimplePaymentNote(context: {
   lastName: string;
   email: string;
   country: string;
+  countryCode: string;
   deliveryDate?: string;
   reason?: string;
   notes?: string;
@@ -238,6 +256,7 @@ function buildSimplePaymentNote(context: {
     `Customer: ${context.firstName} ${context.lastName}`,
     `Email: ${context.email}`,
     `Country: ${context.country}`,
+    `Country code: ${context.countryCode}`,
     context.deliveryDate ? `Delivery date: ${context.deliveryDate}` : undefined,
     context.reason ? `Reason: ${context.reason}` : undefined,
     context.notes ? `Notes: ${context.notes}` : undefined,
@@ -253,6 +272,7 @@ function buildSimplePaymentCustomAttributes(context: {
   firstName: string;
   lastName: string;
   country: string;
+  countryCode: string;
   deliveryDate?: string;
   reason?: string;
   notes?: string;
@@ -263,6 +283,7 @@ function buildSimplePaymentCustomAttributes(context: {
     { key: "first name", value: context.firstName },
     { key: "last name", value: context.lastName },
     { key: "country", value: context.country },
+    { key: "country code", value: context.countryCode },
     context.deliveryDate ? { key: "delivery date", value: context.deliveryDate } : undefined,
     context.reason ? { key: "reason", value: context.reason } : undefined,
     context.notes ? { key: "notes", value: context.notes } : undefined,
@@ -299,15 +320,15 @@ export async function createPaymentDraft(
   };
 }
 
-function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown> {
+export function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown> {
   return compactObject({
     email: request.email,
     phone: request.phone,
     note: request.note,
     presentmentCurrencyCode: request.presentmentCurrencyCode,
     tags: request.tags,
-    billingAddress: request.billingAddress,
-    shippingAddress: request.shippingAddress,
+    billingAddress: toShopifyAddress(request.billingAddress),
+    shippingAddress: toShopifyAddress(request.shippingAddress),
     customAttributes: request.customAttributes,
     lineItems: request.lineItems.map((item) =>
       compactObject({
@@ -328,6 +349,26 @@ function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown
         weight: item.weight
       })
     )
+  });
+}
+
+function toShopifyAddress(
+  address: PaymentDraftAddress | undefined
+): Record<string, unknown> | undefined {
+  if (!address) {
+    return undefined;
+  }
+
+  return compactObject({
+    firstName: address.firstName,
+    lastName: address.lastName,
+    address1: address.address1,
+    address2: address.address2,
+    city: address.city,
+    provinceCode: address.provinceCode,
+    countryCode: address.countryCode,
+    zip: address.zip,
+    phone: address.phone
   });
 }
 
@@ -415,7 +456,9 @@ function optionalAddress(value: unknown, field: string): PaymentDraftAddress | u
     address2: optionalString(value.address2, `${field}.address2`),
     city: optionalString(value.city, `${field}.city`),
     province: optionalString(value.province, `${field}.province`),
+    provinceCode: optionalString(value.provinceCode, `${field}.provinceCode`),
     country: optionalString(value.country, `${field}.country`),
+    countryCode: optionalCountryCode(value.countryCode, `${field}.countryCode`),
     zip: optionalString(value.zip, `${field}.zip`),
     phone: optionalString(value.phone, `${field}.phone`)
   });
@@ -458,6 +501,34 @@ function requiredString(value: unknown, field: string): string {
   }
 
   return stringValue;
+}
+
+function requiredCountryCode(value: unknown, field: string): string {
+  const countryCode = optionalCountryCode(value, field);
+
+  if (!countryCode) {
+    throw new ApiError(400, "bad_request", `${field} is required.`);
+  }
+
+  return countryCode;
+}
+
+function optionalCountryCode(value: unknown, field: string): string | undefined {
+  const countryCode = optionalString(value, field);
+
+  if (countryCode === undefined) {
+    return undefined;
+  }
+
+  if (!ISO_3166_ALPHA_2_CODES.has(countryCode)) {
+    throw new ApiError(
+      400,
+      "bad_request",
+      `${field} must be a valid uppercase ISO 3166-1 alpha-2 country code.`
+    );
+  }
+
+  return countryCode;
 }
 
 function optionalString(value: unknown, field: string): string | undefined {
@@ -520,3 +591,8 @@ function compactObject<T extends Record<string, unknown>>(object: T): T {
     Object.entries(object).filter(([, value]) => value !== undefined)
   ) as T;
 }
+
+const ISO_3166_ALPHA_2_CODES = new Set(
+  `AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW`
+    .split(" ")
+);

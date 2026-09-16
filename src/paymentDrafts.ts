@@ -11,6 +11,7 @@ export type PaymentDraftRequest = {
   billingAddress?: PaymentDraftAddress;
   shippingAddress?: PaymentDraftAddress;
   customAttributes?: PaymentDraftCustomAttribute[];
+  originalOrder?: PaymentDraftOriginalOrder;
 };
 
 export type PaymentDraftLineItem = {
@@ -49,6 +50,11 @@ export type PaymentDraftCustomAttribute = {
   value: string;
 };
 
+type PaymentDraftOriginalOrder = {
+  orderNumber: string;
+  email: string;
+};
+
 type SimplePaymentType = "priority" | "additional";
 
 export type ShopifyConfig = {
@@ -76,6 +82,29 @@ type DraftOrderCreateResponse = {
   };
 };
 
+type OrderAddressLookupResponse = {
+  orders: {
+    nodes: Array<{
+      name: string;
+      email: string | null;
+      shippingAddress: ShopifyMailingAddress | null;
+      billingAddress: ShopifyMailingAddress | null;
+    }>;
+  };
+};
+
+type ShopifyMailingAddress = {
+  firstName: string | null;
+  lastName: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  provinceCode: string | null;
+  countryCodeV2: string | null;
+  zip: string | null;
+  phone: string | null;
+};
+
 const DRAFT_ORDER_CREATE_MUTATION = `
   mutation DraftOrderCreate($input: DraftOrderInput!) {
     draftOrderCreate(input: $input) {
@@ -86,6 +115,39 @@ const DRAFT_ORDER_CREATE_MUTATION = `
       userErrors {
         field
         message
+      }
+    }
+  }
+`;
+
+const ORIGINAL_ORDER_ADDRESS_QUERY = `
+  query OriginalOrderAddress($query: String!) {
+    orders(first: 1, query: $query) {
+      nodes {
+        name
+        email
+        shippingAddress {
+          firstName
+          lastName
+          address1
+          address2
+          city
+          provinceCode
+          countryCodeV2
+          zip
+          phone
+        }
+        billingAddress {
+          firstName
+          lastName
+          address1
+          address2
+          city
+          provinceCode
+          countryCodeV2
+          zip
+          phone
+        }
       }
     }
   }
@@ -210,7 +272,11 @@ function validateSimplePaymentDraftRequest(value: Record<string, unknown>): Paym
       deliveryDate,
       reason,
       notes
-    })
+    }),
+    originalOrder: {
+      orderNumber,
+      email
+    }
   };
 }
 
@@ -295,7 +361,7 @@ export async function createPaymentDraft(
   config: ShopifyConfig,
   request: PaymentDraftRequest
 ): Promise<{ draftOrderId: string; invoiceUrl: string }> {
-  const input = toDraftOrderInput(request);
+  const input = toDraftOrderInput(await withOriginalOrderAddress(config, request));
   const response = await shopifyGraphQl<DraftOrderCreateResponse>(
     config,
     DRAFT_ORDER_CREATE_MUTATION,
@@ -318,6 +384,66 @@ export async function createPaymentDraft(
     draftOrderId: payload.draftOrder.id,
     invoiceUrl: payload.draftOrder.invoiceUrl
   };
+}
+
+async function withOriginalOrderAddress(
+  config: ShopifyConfig,
+  request: PaymentDraftRequest
+): Promise<PaymentDraftRequest> {
+  if (!request.originalOrder) {
+    return request;
+  }
+
+  return {
+    ...request,
+    shippingAddress: await fetchOriginalOrderAddress(config, request.originalOrder)
+  };
+}
+
+async function fetchOriginalOrderAddress(
+  config: ShopifyConfig,
+  originalOrder: PaymentDraftOriginalOrder
+): Promise<PaymentDraftAddress> {
+  const response = await shopifyGraphQl<OrderAddressLookupResponse>(
+    config,
+    ORIGINAL_ORDER_ADDRESS_QUERY,
+    { query: `name:${quoteSearchValue(originalOrder.orderNumber)}` }
+  );
+  const order = response.orders.nodes[0];
+
+  if (!order) {
+    throw new ApiError(400, "bad_request", "Original Shopify order was not found.");
+  }
+
+  if (!order.email || normalizeEmail(order.email) !== normalizeEmail(originalOrder.email)) {
+    throw new ApiError(
+      400,
+      "bad_request",
+      "Submitted email does not match the original Shopify order email."
+    );
+  }
+
+  const address = order.shippingAddress ?? order.billingAddress;
+
+  if (!address?.countryCodeV2) {
+    throw new ApiError(
+      400,
+      "bad_request",
+      "Original Shopify order does not have a usable shipping or billing address."
+    );
+  }
+
+  return compactObject({
+    firstName: address.firstName ?? undefined,
+    lastName: address.lastName ?? undefined,
+    address1: address.address1 ?? undefined,
+    address2: address.address2 ?? undefined,
+    city: address.city ?? undefined,
+    provinceCode: address.provinceCode ?? undefined,
+    countryCode: address.countryCodeV2,
+    zip: address.zip ?? undefined,
+    phone: address.phone ?? undefined
+  });
 }
 
 export function toDraftOrderInput(request: PaymentDraftRequest): Record<string, unknown> {
@@ -350,6 +476,14 @@ export function toDraftOrderInput(request: PaymentDraftRequest): Record<string, 
       })
     )
   });
+}
+
+function quoteSearchValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function toShopifyAddress(

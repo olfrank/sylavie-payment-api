@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "dev": "vercel dev",
-    "test": "tsc -p tsconfig.test.json && node --test .test-dist/tests/paymentDrafts.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/tests/*.test.js",
+    "register:orders-paid-webhook": "node scripts/register-orders-paid-webhook.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

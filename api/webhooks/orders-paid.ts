@@ -1,6 +1,7 @@
 import { getConfig } from "../../src/config.js";
 import { fulfillPaidPaymentOrder } from "../../src/paymentFulfillment.js";
 import { verifyShopifyWebhookHmac } from "../../src/shopifyWebhook.js";
+import { createHash } from "node:crypto";
 
 type ErrorCode = "bad_request" | "configuration_error" | "internal_error" | "unauthorized";
 
@@ -10,6 +11,18 @@ export async function POST(request: Request): Promise<Response> {
     const rawBody = Buffer.from(await request.arrayBuffer());
     const hmacHeader = request.headers.get("x-shopify-hmac-sha256") ?? undefined;
     const hmacValid = verifyShopifyWebhookHmac(rawBody, hmacHeader, appConfig.shopifyClientSecret);
+
+    console.log(
+      JSON.stringify({
+        clientIdFingerprint: fingerprint(appConfig.shopifyClientId),
+        clientSecretFingerprint: fingerprint(appConfig.shopifyClientSecret),
+        secretLength: appConfig.shopifyClientSecret.length,
+        rawBodyByteLength: rawBody.byteLength,
+        hasHmacHeader: Boolean(hmacHeader),
+        hmacValid,
+        shopDomain: request.headers.get("x-shopify-shop-domain")
+      })
+    );
 
     if (!hmacValid) {
       return errorResponse(401, "unauthorized", "Invalid Shopify webhook signature.");
@@ -41,6 +54,10 @@ export async function POST(request: Request): Promise<Response> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function fingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 function errorResponse(status: number, code: ErrorCode, message: string): Response {

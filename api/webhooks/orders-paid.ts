@@ -19,8 +19,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const appConfig = getConfig();
     const rawBody = await readRawRequestBody(req);
     const hmacHeader = req.headers["x-shopify-hmac-sha256"];
+    const shopDomainHeader = req.headers["x-shopify-shop-domain"];
+    const hmacValid = verifyShopifyWebhookHmac(rawBody, hmacHeader, appConfig.shopifyClientSecret);
 
-    if (!verifyShopifyWebhookHmac(rawBody, hmacHeader, appConfig.shopifyClientSecret)) {
+    console.log(
+      JSON.stringify({
+        hasHmacHeader: Array.isArray(hmacHeader)
+          ? hmacHeader.length > 0 && hmacHeader.some(Boolean)
+          : Boolean(hmacHeader),
+        shopDomain: Array.isArray(shopDomainHeader) ? shopDomainHeader[0] : shopDomainHeader,
+        requestBodyType: typeof req.body,
+        requestBodyIsBuffer: Buffer.isBuffer(req.body),
+        rawBodyByteLength: rawBody.byteLength,
+        rawBodyLengthIsZero: rawBody.byteLength === 0,
+        hmacValid
+      })
+    );
+
+    if (!hmacValid) {
       res.status(401).json({
         error: {
           code: "unauthorized",

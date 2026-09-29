@@ -1,75 +1,56 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getConfig } from "../../src/config.js";
-import { ApiError, sendError } from "../../src/http.js";
 import { fulfillPaidPaymentOrder } from "../../src/paymentFulfillment.js";
-import { readRawRequestBody, verifyShopifyWebhookHmac } from "../../src/shopifyWebhook.js";
+import { verifyShopifyWebhookHmac } from "../../src/shopifyWebhook.js";
 
-export const config = {
-  api: {
-    bodyParser: false
-  }
-};
+type ErrorCode = "bad_request" | "configuration_error" | "internal_error" | "unauthorized";
 
-export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+export async function POST(request: Request): Promise<Response> {
   try {
-    if (req.method !== "POST") {
-      throw new ApiError(405, "method_not_allowed", "Use POST for this endpoint.");
-    }
-
     const appConfig = getConfig();
-    const rawBody = await readRawRequestBody(req);
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"];
-    const shopDomainHeader = req.headers["x-shopify-shop-domain"];
+    const rawBody = Buffer.from(await request.arrayBuffer());
+    const hmacHeader = request.headers.get("x-shopify-hmac-sha256") ?? undefined;
     const hmacValid = verifyShopifyWebhookHmac(rawBody, hmacHeader, appConfig.shopifyClientSecret);
 
-    console.log(
-      JSON.stringify({
-        hasHmacHeader: Array.isArray(hmacHeader)
-          ? hmacHeader.length > 0 && hmacHeader.some(Boolean)
-          : Boolean(hmacHeader),
-        shopDomain: Array.isArray(shopDomainHeader) ? shopDomainHeader[0] : shopDomainHeader,
-        requestBodyType: typeof req.body,
-        requestBodyIsBuffer: Buffer.isBuffer(req.body),
-        rawBodyByteLength: rawBody.byteLength,
-        rawBodyLengthIsZero: rawBody.byteLength === 0,
-        hmacValid
-      })
-    );
-
     if (!hmacValid) {
-      res.status(401).json({
-        error: {
-          code: "unauthorized",
-          message: "Invalid Shopify webhook signature."
-        }
-      });
-      return;
+      return errorResponse(401, "unauthorized", "Invalid Shopify webhook signature.");
     }
 
     let payload: unknown;
     try {
       payload = JSON.parse(rawBody.toString("utf8"));
     } catch {
-      throw new ApiError(400, "bad_request", "Webhook body must be valid JSON.");
+      return errorResponse(400, "bad_request", "Webhook body must be valid JSON.");
     }
 
     if (!isRecord(payload)) {
-      throw new ApiError(400, "bad_request", "Webhook body must be a JSON object.");
+      return errorResponse(400, "bad_request", "Webhook body must be a JSON object.");
     }
 
     const result = await fulfillPaidPaymentOrder(appConfig, payload);
 
-    res.status(200).json({ ok: true, result });
+    return Response.json({ ok: true, result }, { status: 200 });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Missing required environment variable")) {
-      sendError(res, new ApiError(500, "configuration_error", error.message));
-      return;
+      return errorResponse(500, "configuration_error", error.message);
     }
 
-    sendError(res, error);
+    console.error(error);
+    return errorResponse(500, "internal_error", "An unexpected error occurred.");
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorResponse(status: number, code: ErrorCode, message: string): Response {
+  return Response.json(
+    {
+      error: {
+        code,
+        message
+      }
+    },
+    { status }
+  );
 }

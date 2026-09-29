@@ -1,16 +1,9 @@
 import { createHmac } from "node:crypto";
-import { Readable } from "node:stream";
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import handler from "../api/webhooks/orders-paid.js";
+import { POST } from "../api/webhooks/orders-paid.js";
 
 const WEBHOOK_SECRET = "test-secret";
-
-type MockResponse = VercelResponse & {
-  statusCodeValue?: number;
-  jsonBody?: unknown;
-};
 
 function webhookPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -25,29 +18,16 @@ function sign(rawBody: Buffer): string {
   return createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("base64");
 }
 
-function mockRequest(payload: Record<string, unknown>, hmac?: string): VercelRequest {
+function mockRequest(payload: Record<string, unknown>, hmac?: string): Request {
   const rawBody = Buffer.from(JSON.stringify(payload));
-  const req = Readable.from([rawBody]) as VercelRequest;
 
-  req.method = "POST";
-  req.headers = {
-    "x-shopify-hmac-sha256": hmac ?? sign(rawBody)
-  };
-
-  return req;
-}
-
-function mockResponse(): MockResponse {
-  return {
-    status(code: number) {
-      this.statusCodeValue = code;
-      return this;
+  return new Request("https://example.com/api/webhooks/orders-paid", {
+    method: "POST",
+    headers: {
+      "x-shopify-hmac-sha256": hmac ?? sign(rawBody)
     },
-    json(body: unknown) {
-      this.jsonBody = body;
-      return this;
-    }
-  } as MockResponse;
+    body: rawBody
+  });
 }
 
 function withEnv(): NodeJS.ProcessEnv {
@@ -139,16 +119,16 @@ function installFetchMock(options: {
 test("invalid HMAC is rejected", async () => {
   const originalEnv = withEnv();
   const originalFetch = installFetchMock();
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload(), "invalid-signature"), res);
+    res = await POST(mockRequest(webhookPayload(), "invalid-signature"));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res.statusCodeValue, 401);
+  assert.equal(res!.status, 401);
 });
 
 test("normal order is ignored", async () => {
@@ -157,16 +137,16 @@ test("normal order is ignored", async () => {
   const originalFetch = installFetchMock({
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "spring, swimwear" })), res);
+    res = await POST(mockRequest(webhookPayload({ tags: "spring, swimwear" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res.statusCodeValue, 200);
+  assert.equal(res!.status, 200);
   assert.equal(graphQlBodies.length, 0);
 });
 
@@ -176,10 +156,10 @@ test("priority-payment order is fulfilled without customer notification or track
   const originalFetch = installFetchMock({
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "priority-payment, SV1421" })), res);
+    res = await POST(mockRequest(webhookPayload({ tags: "priority-payment, SV1421" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
@@ -191,7 +171,7 @@ test("priority-payment order is fulfilled without customer notification or track
   const fulfillment = (fulfillmentMutation?.variables as { fulfillment: Record<string, unknown> })
     .fulfillment;
 
-  assert.equal(res.statusCodeValue, 200);
+  assert.equal(res!.status, 200);
   assert.equal(fulfillment.notifyCustomer, false);
   assert.equal("trackingInfo" in fulfillment, false);
 });
@@ -202,16 +182,16 @@ test("additional-payment order is eligible for fulfillment", async () => {
   const originalFetch = installFetchMock({
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "additional-payment" })), res);
+    res = await POST(mockRequest(webhookPayload({ tags: "additional-payment" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res.statusCodeValue, 200);
+  assert.equal(res!.status, 200);
   assert.equal(
     graphQlBodies.some((body) => String(body.query).includes("FulfillPaymentOrder")),
     true
@@ -225,16 +205,16 @@ test("already fulfilled order safely no-ops", async () => {
     fulfillmentOrder: { status: "CLOSED" },
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "priority-payment" })), res);
+    res = await POST(mockRequest(webhookPayload({ tags: "priority-payment" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res.statusCodeValue, 200);
+  assert.equal(res!.status, 200);
   assert.equal(
     graphQlBodies.some((body) => String(body.query).includes("FulfillPaymentOrder")),
     false
@@ -248,16 +228,16 @@ test("no actionable fulfillment order safely no-ops", async () => {
     fulfillmentOrder: { supportedActions: [], remainingQuantity: 1 },
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res = mockResponse();
+  let res: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "priority-payment" })), res);
+    res = await POST(mockRequest(webhookPayload({ tags: "priority-payment" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res.statusCodeValue, 200);
+  assert.equal(res!.status, 200);
   assert.equal(
     graphQlBodies.some((body) => String(body.query).includes("FulfillPaymentOrder")),
     false
@@ -270,11 +250,11 @@ test("retried webhook does not create a duplicate fulfillment after order is ful
   const originalFetch = installFetchMock({
     onGraphQlBody: (body) => graphQlBodies.push(body)
   });
-  const res1 = mockResponse();
-  const res2 = mockResponse();
+  let res1: Response;
+  let res2: Response;
 
   try {
-    await handler(mockRequest(webhookPayload({ tags: "priority-payment" })), res1);
+    res1 = await POST(mockRequest(webhookPayload({ tags: "priority-payment" })));
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const endpoint = String(url);
@@ -299,14 +279,14 @@ test("retried webhook does not create a duplicate fulfillment after order is ful
       });
     }) as typeof fetch;
 
-    await handler(mockRequest(webhookPayload({ tags: "priority-payment" })), res2);
+    res2 = await POST(mockRequest(webhookPayload({ tags: "priority-payment" })));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
   }
 
-  assert.equal(res1.statusCodeValue, 200);
-  assert.equal(res2.statusCodeValue, 200);
+  assert.equal(res1!.status, 200);
+  assert.equal(res2!.status, 200);
   assert.equal(
     graphQlBodies.filter((body) => String(body.query).includes("FulfillPaymentOrder")).length,
     1

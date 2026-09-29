@@ -51,6 +51,11 @@ export type PaymentFulfillmentResult =
   | { status: "noop"; reason: "already_fulfilled" | "nothing_fulfillable" }
   | { status: "fulfilled"; fulfillmentCount: number };
 
+export type PaymentFulfillmentDebugLogger = (
+  stage: string,
+  details?: Record<string, unknown>
+) => void;
+
 const ORDER_FULFILLMENT_LOOKUP_QUERY = `
   query PaymentOrderFulfillmentLookup($id: ID!) {
     order(id: $id) {
@@ -98,17 +103,30 @@ export function isPaymentOrderTags(tags: string | string[] | undefined): boolean
 
 export async function fulfillPaidPaymentOrder(
   config: ShopifyConfig,
-  payload: OrdersPaidWebhookPayload
+  payload: OrdersPaidWebhookPayload,
+  debugLog?: PaymentFulfillmentDebugLogger
 ): Promise<PaymentFulfillmentResult> {
+  debugLog?.("eligibility_check_started");
+
   if (!isPaymentOrderTags(payload.tags)) {
+    debugLog?.("ineligible_order", { paymentTagEligible: false, finalOutcome: "not_eligible" });
     return { status: "ignored", reason: "not_payment_order" };
   }
+
+  debugLog?.("eligible_payment_order", { paymentTagEligible: true });
 
   const orderId = toOrderGraphQlId(payload);
 
   if (!orderId) {
+    debugLog?.("admin_order_lookup_failed", {
+      reason: "missing_order_id",
+      finalOutcome: "not_eligible"
+    });
     return { status: "ignored", reason: "missing_order_id" };
   }
+
+  debugLog?.("admin_order_lookup_started");
+  debugLog?.("fulfillment_orders_lookup_started");
 
   const lookup = await shopifyGraphQl<OrderFulfillmentLookupResponse>(
     config,
@@ -117,28 +135,68 @@ export async function fulfillPaidPaymentOrder(
   );
 
   if (!lookup.order) {
+    debugLog?.("admin_order_lookup_succeeded", { orderFound: false });
+    debugLog?.("fulfillment_orders_lookup_failed", {
+      reason: "order_not_found",
+      finalOutcome: "not_eligible"
+    });
     return { status: "ignored", reason: "order_not_found" };
   }
 
-  if (!isPaymentOrderTags(lookup.order.tags)) {
+  debugLog?.("admin_order_lookup_succeeded", { orderFound: true });
+  debugLog?.("fulfillment_orders_lookup_succeeded", {
+    fulfillmentOrderCount: lookup.order.fulfillmentOrders.nodes.length
+  });
+
+  const actualOrderPaymentTagEligible = isPaymentOrderTags(lookup.order.tags);
+  debugLog?.("actual_order_tags_checked", {
+    actualOrderPaymentTagEligible
+  });
+
+  if (!actualOrderPaymentTagEligible) {
+    debugLog?.("ineligible_order", { paymentTagEligible: false, finalOutcome: "not_eligible" });
     return { status: "ignored", reason: "not_payment_order" };
   }
 
   if (lookup.order.displayFulfillmentStatus === "FULFILLED" || !lookup.order.fulfillable) {
+    debugLog?.("already_fulfilled", {
+      orderFulfillable: lookup.order.fulfillable,
+      displayFulfillmentStatus: lookup.order.displayFulfillmentStatus,
+      finalOutcome: "already_fulfilled"
+    });
     return { status: "noop", reason: "already_fulfilled" };
   }
 
+  const createFulfillmentCapabilityFound = lookup.order.fulfillmentOrders.nodes.some(
+    hasCreateFulfillmentCapability
+  );
+  const remainingFulfillableQuantityFound = lookup.order.fulfillmentOrders.nodes.some(
+    hasRemainingFulfillableQuantity
+  );
   const actionableFulfillmentOrders = lookup.order.fulfillmentOrders.nodes.filter(
     isActionableFulfillmentOrder
   );
+  const actionableFulfillmentOrderFound = actionableFulfillmentOrders.length > 0;
+
+  debugLog?.("fulfillment_order_actionability_checked", {
+    fulfillmentOrderCount: lookup.order.fulfillmentOrders.nodes.length,
+    actionableFulfillmentOrderFound,
+    createFulfillmentCapabilityFound,
+    remainingFulfillableQuantityFound
+  });
 
   if (actionableFulfillmentOrders.length === 0) {
+    debugLog?.("no_actionable_fulfillment_order", {
+      finalOutcome: "no_actionable_fulfillment_order"
+    });
     return { status: "noop", reason: "nothing_fulfillable" };
   }
 
   let fulfillmentCount = 0;
 
   for (const fulfillmentOrder of actionableFulfillmentOrders) {
+    debugLog?.("fulfillment_create_started", { notifyCustomer: false });
+
     const response = await shopifyGraphQl<FulfillmentCreateResponse>(
       config,
       FULFILLMENT_CREATE_MUTATION,
@@ -157,6 +215,14 @@ export async function fulfillPaidPaymentOrder(
     const userErrors = response.fulfillmentCreate.userErrors;
 
     if (userErrors.length > 0) {
+      debugLog?.("fulfillment_create_failed", {
+        errorCount: userErrors.length,
+        errorMessages: userErrors.map(sanitizeMessage),
+        finalOutcome: userErrors.every(isIdempotentFulfillmentError)
+          ? "no_actionable_fulfillment_order"
+          : "fulfillment_error"
+      });
+
       if (userErrors.every(isIdempotentFulfillmentError)) {
         continue;
       }
@@ -168,25 +234,42 @@ export async function fulfillPaidPaymentOrder(
 
     if (response.fulfillmentCreate.fulfillment?.id) {
       fulfillmentCount += 1;
+      debugLog?.("fulfillment_create_succeeded", { notifyCustomer: false });
     }
   }
 
-  return fulfillmentCount > 0
-    ? { status: "fulfilled", fulfillmentCount }
-    : { status: "noop", reason: "nothing_fulfillable" };
+  if (fulfillmentCount > 0) {
+    debugLog?.("final_outcome", { finalOutcome: "fulfilled", fulfillmentCount });
+    return { status: "fulfilled", fulfillmentCount };
+  }
+
+  debugLog?.("final_outcome", { finalOutcome: "no_actionable_fulfillment_order" });
+  return { status: "noop", reason: "nothing_fulfillable" };
 }
 
 function isActionableFulfillmentOrder(fulfillmentOrder: FulfillmentOrderNode): boolean {
   return (
     fulfillmentOrder.status === "OPEN" &&
     fulfillmentOrder.requestStatus === "UNSUBMITTED" &&
-    fulfillmentOrder.supportedActions.some((action) => action.action === "CREATE_FULFILLMENT") &&
-    fulfillmentOrder.lineItems.nodes.some((lineItem) => lineItem.remainingQuantity > 0)
+    hasCreateFulfillmentCapability(fulfillmentOrder) &&
+    hasRemainingFulfillableQuantity(fulfillmentOrder)
   );
+}
+
+function hasCreateFulfillmentCapability(fulfillmentOrder: FulfillmentOrderNode): boolean {
+  return fulfillmentOrder.supportedActions.some((action) => action.action === "CREATE_FULFILLMENT");
+}
+
+function hasRemainingFulfillableQuantity(fulfillmentOrder: FulfillmentOrderNode): boolean {
+  return fulfillmentOrder.lineItems.nodes.some((lineItem) => lineItem.remainingQuantity > 0);
 }
 
 function isIdempotentFulfillmentError(error: { message: string }): boolean {
   return /already|closed|fulfilled|no fulfillable|remaining quantity/i.test(error.message);
+}
+
+function sanitizeMessage(error: { message: string }): string {
+  return error.message.replace(/[^\w .,:;-]/g, "").slice(0, 200);
 }
 
 function parseTags(tags: string | string[] | undefined): string[] {

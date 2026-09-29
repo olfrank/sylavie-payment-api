@@ -30,6 +30,26 @@ function mockRequest(payload: Record<string, unknown>, hmac?: string): Request {
   });
 }
 
+function mockModifiedBodyRequest(payload: Record<string, unknown>): Request {
+  const signedBody = Buffer.from(JSON.stringify(payload));
+  const modifiedBody = Buffer.from(JSON.stringify({ ...payload, diagnosticMutation: true }));
+
+  return new Request("https://example.com/api/webhooks/orders-paid", {
+    method: "POST",
+    headers: {
+      "x-shopify-hmac-sha256": sign(signedBody)
+    },
+    body: modifiedBody
+  });
+}
+
+function mockMissingHmacRequest(payload: Record<string, unknown>): Request {
+  return new Request("https://example.com/api/webhooks/orders-paid", {
+    method: "POST",
+    body: Buffer.from(JSON.stringify(payload))
+  });
+}
+
 function withEnv(): NodeJS.ProcessEnv {
   const originalEnv = process.env;
 
@@ -123,6 +143,68 @@ test("invalid HMAC is rejected", async () => {
 
   try {
     res = await POST(mockRequest(webhookPayload(), "invalid-signature"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env = originalEnv;
+  }
+
+  assert.equal(res!.status, 401);
+});
+
+test("missing HMAC is rejected", async () => {
+  const originalEnv = withEnv();
+  const originalFetch = installFetchMock();
+  let res: Response;
+
+  try {
+    res = await POST(mockMissingHmacRequest(webhookPayload()));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env = originalEnv;
+  }
+
+  assert.equal(res!.status, 401);
+});
+
+test("malformed HMAC is rejected", async () => {
+  const originalEnv = withEnv();
+  const originalFetch = installFetchMock();
+  let res: Response;
+
+  try {
+    res = await POST(mockRequest(webhookPayload(), "not base64"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env = originalEnv;
+  }
+
+  assert.equal(res!.status, 401);
+});
+
+test("wrong secret HMAC is rejected", async () => {
+  const originalEnv = withEnv();
+  const originalFetch = installFetchMock();
+  const rawBody = Buffer.from(JSON.stringify(webhookPayload()));
+  const wrongSecretHmac = createHmac("sha256", "wrong-secret").update(rawBody).digest("base64");
+  let res: Response;
+
+  try {
+    res = await POST(mockRequest(webhookPayload(), wrongSecretHmac));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env = originalEnv;
+  }
+
+  assert.equal(res!.status, 401);
+});
+
+test("modified body after signing is rejected", async () => {
+  const originalEnv = withEnv();
+  const originalFetch = installFetchMock();
+  let res: Response;
+
+  try {
+    res = await POST(mockModifiedBodyRequest(webhookPayload()));
   } finally {
     globalThis.fetch = originalFetch;
     process.env = originalEnv;
